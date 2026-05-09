@@ -1,54 +1,69 @@
 import streamlit as st
 import easyocr
+import pandas as pd
 from PIL import Image
 import numpy as np
 
-# Page configuration
-st.set_page_config(page_title="Hindi-English OCR Tool", layout="centered")
+st.set_page_config(page_title="Land Doc Parser", layout="wide")
 
-st.title("📸 Image to Text Converter")
-st.subheader("Hindi, English aur Hinglish support ke saath")
+st.title("🚜 Land Document Smart Parser")
+st.write("Image se Khata, Khesra aur Rakba ka table banayein")
 
-# Model ko cache kar rahe hain taaki baar-baar load na ho
 @st.cache_resource
 def load_model():
-    # 'hi' for Hindi, 'en' for English
-    return easyocr.Reader(['hi', 'en'], gpu=False) 
+    # Hindi aur English dono scripts enable hain
+    return easyocr.Reader(['hi', 'en'])
 
 reader = load_model()
 
-# File uploader
-uploaded_file = st.file_uploader("Apni image upload karein...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Document ki photo upload karein...", type=["jpg", "png", "jpeg"])
 
-if uploaded_file is not None:
-    # Image dikhana
+if uploaded_file:
     image = Image.open(uploaded_file)
-    st.image(image, caption='Uploaded Image', use_column_width=True)
+    st.image(image, caption="Uploaded Document", width=500)
     
-    st.write("---")
-    
-    with st.spinner('Text extract ho raha hai... Please wait...'):
-        # Image ko array mein convert karna
-        img_array = np.array(image)
-        
-        # OCR perform karna
-        results = reader.readtext(img_array)
-        
-        # Text ko ek saath jodna
-        full_text = ""
-        for (bbox, text, prob) in results:
-            full_text += text + " "
-        
-        if full_text:
-            st.success("Extraction Complete!")
-            st.text_area("Extracted Text:", full_text, height=250)
+    if st.button("Extract Table Data"):
+        with st.spinner('AI data process kar raha hai...'):
+            img_array = np.array(image)
+            results = reader.readtext(img_array)
             
-            # Download button
-            st.download_button(
-                label="Download as Text File",
-                data=full_text,
-                file_name="extracted_text.txt",
-                mime="text/plain"
-            )
-        else:
-            st.warning("Koi text nahi mila. Please clear image use karein.")
+            # extracted_data mein hum (text, x, y) store karenge
+            raw_data = []
+            for (bbox, text, prob) in results:
+                raw_data.append({
+                    'text': text,
+                    'x': bbox[0][0],
+                    'y': bbox[0][1]
+                })
+
+            # Logic: Hum specific keywords dhoond rahe hain
+            final_rows = []
+            temp_row = {"Khata": "", "Khesra": "", "Rakba": "", "D_Value": ""}
+            
+            # Simple Column logic (Experimental)
+            # Hum text ki vertical position (y) se rows align karte hain
+            for item in raw_data:
+                txt = item['text']
+                # Keywords checking
+                if "खाता" in txt or "86" in txt or "109" in txt: # Example mapping
+                    temp_row["Khata"] = txt
+                elif "खेसरा" in txt or any(char.isdigit() for char in txt):
+                    # Agar bada digit hai toh wo Khesra ho sakta hai
+                    if len(txt) >= 4: temp_row["Khesra"] = txt
+                elif "रकवा" in txt or "." in txt:
+                    temp_row["Rakba"] = txt
+                
+                # Jab row bhar jaye (logic adjustment needed based on actual image)
+                if len(temp_row["Khata"]) > 0 and len(temp_row["Khesra"]) > 0:
+                    final_rows.append(temp_row.copy())
+                    temp_row = {"Khata": "", "Khesra": "", "Rakba": "", "D_Value": ""}
+
+            # DataFrame banana
+            df = pd.DataFrame(raw_data) # Filhal raw data dikhate hain for accuracy
+            
+            st.subheader("Detected Text Blocks:")
+            st.dataframe(df[['text']]) 
+            
+            # CSV Download
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Excel/CSV", csv, "land_records.csv", "text/csv")
