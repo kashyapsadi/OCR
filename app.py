@@ -4,79 +4,62 @@ import pandas as pd
 from PIL import Image
 import numpy as np
 
-st.set_page_config(page_title="Accurate Land Parser", layout="wide")
-st.title("🎯 Accurate Land Record Extractor")
+# Function to fix Hindi numbers to English
+def fix_hindi_nums(text):
+    hindi_to_eng = str.maketrans('०१२३४५६७८९', '0123456789')
+    return text.translate(hindi_to_eng)
+
+st.set_page_config(page_title="Final Land Parser", layout="wide")
+st.title("🚜 Fixed Land Record Parser")
 
 @st.cache_resource
 def load_model():
     return easyocr.Reader(['hi', 'en'])
 
 reader = load_model()
-
-uploaded_file = st.file_uploader("Document upload karein...", type=["jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", width=500)
+    img = Image.open(uploaded_file)
+    st.image(img, width=400)
     
-    if st.button("Fix & Extract Data"):
-        with st.spinner('Rows align ho rahi hain...'):
-            img_array = np.array(image)
-            results = reader.readtext(img_array, detail=1)
-            
-            # Step 1: Raw data nikalna
-            data_points = []
-            for (bbox, text, prob) in results:
-                # y_center nikalna taaki alignment sahi ho
-                y_center = (bbox[0][1] + bbox[2][1]) / 2
-                data_points.append({
-                    'text': text,
-                    'x': bbox[0][0],
-                    'y': y_center
-                })
+    if st.button("Final Fix & Extract"):
+        img_array = np.array(img)
+        width, height = img.size
+        results = reader.readtext(img_array)
+        
+        rows = []
+        for (bbox, text, prob) in results:
+            text = fix_hindi_nums(text).strip()
+            x_center = (bbox[0][0] + bbox[1][0]) / 2
+            y_center = (bbox[0][1] + bbox[2][1]) / 2
+            rows.append({'text': text, 'x': x_center, 'y': y_center})
 
-            # Step 2: Y-axis grouping (Ek hi line wale text ko ek group mein dalna)
-            df_raw = pd.DataFrame(data_points)
-            # 15-20 pixels ka margin dete hain row alignment ke liye
-            df_raw['row'] = (df_raw['y'] / 20).round() 
+        df_raw = pd.DataFrame(rows)
+        # 1. Group by Rows (Y-axis) with a bigger margin to avoid split rows
+        df_raw['row_group'] = (df_raw['y'] / 35).round() 
+        
+        final_data = []
+        for _, group in df_raw.groupby('row_group'):
+            row_dict = {"Khata": "", "Khesra": "", "Rakba": "", "Decimal": ""}
+            for _, item in group.iterrows():
+                val = item['text']
+                x = item['x']
+                
+                # STRICT COLUMN LOGIC based on image width percentage
+                x_pct = (x / width) * 100
+                
+                if x_pct < 25: # Left side
+                    if val.isdigit() and len(val) < 4: row_dict["Khata"] = val
+                elif 25 <= x_pct < 50: # Mid-left
+                    if val.isdigit() and len(val) >= 3: row_dict["Khesra"] = val
+                elif 50 <= x_pct < 75: # Mid-right
+                    if "." in val or "कठ्ठा" in val: row_dict["Rakba"] = val
+                elif x_pct >= 75: # Far right
+                    if "." in val or val.replace(".","").isdigit(): row_dict["Decimal"] = val
             
-            structured_rows = []
-            for row_id, group in df_raw.groupby('row'):
-                row_text = " ".join(group.sort_values('x')['text'].values)
-                
-                # Logic: Agar line mein koi kaam ka number hai
-                text_list = group.sort_values('x')['text'].tolist()
-                
-                # Hum yahan check kar rahe hain ki row mein data hai ya sirf header
-                if any(char.isdigit() for char in "".join(text_list)):
-                    structured_rows.append(text_list)
+            # Sirf tab add karein agar Khesra ya Khata mil gaya ho
+            if row_dict["Khata"] or row_dict["Khesra"]:
+                final_data.append(row_dict)
 
-            # Step 3: Column Sorting
-            # Is image mein 4-5 main columns hain. 
-            # Hum x-position ke hisab se inhe dabba mein dalenge.
-            final_table = []
-            for r in structured_rows:
-                row_dict = {"Khata": "", "Khesra": "", "Rakba": "", "D": ""}
-                for item in r:
-                    # Yahan hum x-coordinate aur text pattern se decide karenge
-                    val = item.replace(" ", "")
-                    if "खाता" in val: continue
-                    
-                    if len(val) <= 3 and val.isdigit(): row_dict["Khata"] = val
-                    elif len(val) >= 4 and val.isdigit(): row_dict["Khesra"] = val
-                    elif "." in val and "0." in val: row_dict["Rakba"] = val
-                    elif "." in val and len(val) > 4: row_dict["D"] = val
-                
-                if row_dict["Khesra"]: # Khesra zaroori hai row valid hone ke liye
-                    final_table.append(row_dict)
-
-            df_final = pd.DataFrame(final_table)
-            
-            if not df_final.empty:
-                st.subheader("✅ Aligned Table")
-                st.table(df_final)
-                
-                csv = df_final.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("Download Correct Excel", csv, "fixed_land_data.csv")
-            else:
-                st.error("Data detect nahi hua. Pattern match nahi ho raha.")
+        st.table(pd.DataFrame(final_data))
