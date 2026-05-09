@@ -4,62 +4,69 @@ import pandas as pd
 from PIL import Image
 import numpy as np
 
-# Function to fix Hindi numbers to English
-def fix_hindi_nums(text):
+# Hindi numbers ko English mein convert karne ke liye
+def fix_numbers(text):
     hindi_to_eng = str.maketrans('०१२३४५६७८९', '0123456789')
-    return text.translate(hindi_to_eng)
+    return text.translate(hindi_to_eng).replace(" ", "")
 
-st.set_page_config(page_title="Final Land Parser", layout="wide")
-st.title("🚜 Fixed Land Record Parser")
+st.set_page_config(page_title="Land Parser Pro", layout="wide")
+st.title("🚜 Land Record Parser (Decimal Fixed)")
 
 @st.cache_resource
 def load_model():
-    return easyocr.Reader(['hi', 'en'])
+    return easyocr.Reader(['hi', 'en'], gpu=False)
 
 reader = load_model()
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Document upload karein...", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
     img = Image.open(uploaded_file)
+    width, height = img.size
     st.image(img, width=400)
     
-    if st.button("Final Fix & Extract"):
-        img_array = np.array(img)
-        width, height = img.size
-        results = reader.readtext(img_array)
-        
-        rows = []
-        for (bbox, text, prob) in results:
-            text = fix_hindi_nums(text).strip()
-            x_center = (bbox[0][0] + bbox[1][0]) / 2
-            y_center = (bbox[0][1] + bbox[2][1]) / 2
-            rows.append({'text': text, 'x': x_center, 'y': y_center})
-
-        df_raw = pd.DataFrame(rows)
-        # 1. Group by Rows (Y-axis) with a bigger margin to avoid split rows
-        df_raw['row_group'] = (df_raw['y'] / 35).round() 
-        
-        final_data = []
-        for _, group in df_raw.groupby('row_group'):
-            row_dict = {"Khata": "", "Khesra": "", "Rakba": "", "Decimal": ""}
-            for _, item in group.iterrows():
-                val = item['text']
-                x = item['x']
-                
-                # STRICT COLUMN LOGIC based on image width percentage
-                x_pct = (x / width) * 100
-                
-                if x_pct < 25: # Left side
-                    if val.isdigit() and len(val) < 4: row_dict["Khata"] = val
-                elif 25 <= x_pct < 50: # Mid-left
-                    if val.isdigit() and len(val) >= 3: row_dict["Khesra"] = val
-                elif 50 <= x_pct < 75: # Mid-right
-                    if "." in val or "कठ्ठा" in val: row_dict["Rakba"] = val
-                elif x_pct >= 75: # Far right
-                    if "." in val or val.replace(".","").isdigit(): row_dict["Decimal"] = val
+    if st.button("Extract Clean Data"):
+        with st.spinner('Processing...'):
+            img_array = np.array(img)
+            results = reader.readtext(img_array)
             
-            # Sirf tab add karein agar Khesra ya Khata mil gaya ho
-            if row_dict["Khata"] or row_dict["Khesra"]:
-                final_data.append(row_dict)
+            data_points = []
+            for (bbox, text, prob) in results:
+                clean_text = fix_numbers(text)
+                x_center = (bbox[0][0] + bbox[1][0]) / 2
+                y_center = (bbox[0][1] + bbox[2][1]) / 2
+                data_points.append({'text': clean_text, 'x': x_center, 'y': y_center})
 
-        st.table(pd.DataFrame(final_data))
+            df_raw = pd.DataFrame(data_points)
+            # Row grouping logic (30-40 pixels ka gap)
+            df_raw['row'] = (df_raw['y'] / 35).round()
+            
+            final_table = []
+            for _, group in df_raw.groupby('row'):
+                row_dict = {"Khata": "", "Khesra": "", "Rakba": "", "Decimal": ""}
+                
+                for _, item in group.iterrows():
+                    val = item['text']
+                    # X-Coordinate percentage (Width ka kitna % hai)
+                    x_pct = (item['x'] / width) * 100
+                    
+                    # 1. Khata (Ekdum Left)
+                    if x_pct < 20:
+                        if val.isdigit(): row_dict["Khata"] = val
+                    
+                    # 2. Khesra (Left-Middle)
+                    elif 20 <= x_pct < 45:
+                        if val.isdigit(): row_dict["Khesra"] = val
+                    
+                    # 3. Rakba (Middle-Right) - Isme hamesha 0.X.X jaisa format hota hai
+                    elif 45 <= x_pct < 75:
+                        if "." in val: row_dict["Rakba"] = val
+                    
+                    # 4. Decimal (Extreme Right) - Page ke aakhri 25% hisse mein
+                    elif x_pct >= 75:
+                        # Sirf wohi number jo page ke ekdum kone mein hain
+                        row_dict["Decimal"] = val
+
+                if row_dict["Khesra"] or row_dict["Khata"]:
+                    final_table.append(row_dict)
+
+            st.table(pd.DataFrame(final_table))
